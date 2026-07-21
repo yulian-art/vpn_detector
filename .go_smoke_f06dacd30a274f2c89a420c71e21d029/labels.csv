@@ -1,0 +1,3 @@
+﻿file_name,pcap_member,label_binary,label_confidence,label_tool,label_protocol,split_group
+normal.pcapng,normal.pcapng,0,strong,NonVPN,NonVPN,g0
+vpn.pcapng,vpn.pcapng,1,strong,MockVPN,TLS_Tunnel,g1
