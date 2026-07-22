@@ -35,61 +35,90 @@ func (e RuleEngine) Match(f Feature) []RuleMatch {
 }
 
 func AllRules() []RuleDef {
-	rule := func(id, category string, confidence int, detect func(Feature) (bool, string)) RuleDef {
-		return RuleDef{ID: id, Category: category, Confidence: confidence, Detect: detect, Enabled: true}
+	rules := make([]RuleDef, 0, len(SharedRuleConfig.Rules))
+	for _, cfg := range SharedRuleConfig.Rules {
+		rules = append(rules, buildRuleFromConfig(cfg))
 	}
-	block := func(n int, threshold float64, label string) func(Feature) (bool, string) {
-		return func(f Feature) (bool, string) {
-			ratio := SafeFloat(f[fmt.Sprintf("block_%d_ratio", n)])
-			if ratio >= threshold {
-				return true, fmt.Sprintf("fixed payload block %d ratio %.2f (%s)", n, ratio, label)
-			}
-			return false, ""
+	return rules
+}
+
+func buildRuleFromConfig(cfg RuleConfigEntry) RuleDef {
+	// detector 名称来自共享 JSON，Go 侧只负责绑定到本地实现函数。
+	detect := resolveDetector(cfg)
+	enabled := true
+	if cfg.Enabled != nil {
+		enabled = *cfg.Enabled
+	}
+	return RuleDef{
+		ID:          cfg.ID,
+		Category:    cfg.Category,
+		Description: cfg.Description,
+		Confidence:  cfg.Confidence,
+		Detect:      detect,
+		Enabled:     enabled,
+	}
+}
+
+func resolveDetector(cfg RuleConfigEntry) func(Feature) (bool, string) {
+	if cfg.Detector == "block_payload" {
+		// 固定载荷块类规则共用模板，块大小和阈值由 JSON params 控制。
+		return makeBlockDetector(SafeInt(cfg.Params["block_size"]), SafeFloat(cfg.Params["threshold"]), ToString(cfg.Params["label"]))
+	}
+	if detect, ok := detectorRegistry()[cfg.Detector]; ok {
+		return detect
+	}
+	panic(fmt.Sprintf("unknown detector in rules_config.json: %s", cfg.Detector))
+}
+
+func makeBlockDetector(n int, threshold float64, label string) func(Feature) (bool, string) {
+	return func(f Feature) (bool, string) {
+		ratio := SafeFloat(f[fmt.Sprintf("block_%d_ratio", n)])
+		if ratio >= threshold {
+			return true, fmt.Sprintf("fixed payload block %d ratio %.2f (%s)", n, ratio, label)
 		}
+		return false, ""
 	}
-	return []RuleDef{
-		rule("R_IPSEC_ESP", "L3_PROTOCOL", 100, detectIPSecESP),
-		rule("R_IPSEC_AH", "L3_PROTOCOL", 100, detectIPSecAH),
-		rule("R_IPSEC_ESP_AH", "L3_PROTOCOL", 100, detectIPSecESPAH),
-		rule("R_IPSEC_IKE", "L4_UDP", 98, detectIPSecIKE),
-		rule("R_IPSEC_NATT", "L4_UDP", 98, detectIPSecNATT),
-		rule("R_WIREGUARD_PORT", "L4_UDP", 98, detectWireGuardPort),
-		rule("R_WIREGUARD_PROTO", "L4_UDP", 98, detectWireGuardProto),
-		rule("R_OPENVPN", "L4_UDP", 95, detectOpenVPN),
-		rule("R_PORT_MISMATCH_3306", "L4_TCP", 98, detectPortMismatch3306),
-		rule("R_SPECIAL_PORT_ENCRYPTED", "L4_TCP", 92, detectSpecialPortEncrypted),
-		rule("R_SSH_KEEPALIVE_PROBE", "L4_TCP", 95, detectSSHKeepalive),
-		rule("R_P2P_DUAL_CHANNEL", "L4_TCP", 95, detectP2PDualChannel),
-		rule("R_NO_TLS_ENCRYPTED_TCP", "L4_TCP", 95, detectNoTLSEncryptedTCP),
-		rule("R_VPN_DOMAIN_SNI", "TLS_JA4", 95, detectVPNDomainSNI),
-		rule("R_CHROME_JA4_NO_ALPN", "TLS_JA4", 95, detectChromeJA4NoALPN),
-		rule("R_JA4_NON_BROWSER", "TLS_JA4", 85, detectJA4NonBrowser),
-		rule("R_JA4_GOLANG", "TLS_JA4", 92, detectJA4Go),
-		rule("R_SINGLE_CIPHER_SUITE", "TLS_JA4", 95, detectSingleCipherSuite),
-		rule("R_TLS_V1_0", "TLS_JA4", 95, detectTLS10),
-		rule("R_SNI_IP_MISMATCH", "TLS_JA4", 95, detectSNIIPMismatch),
-		rule("R_SINGLE_SNI_MONOPOLY", "TLS_JA4", 92, detectSingleSNIMonopoly),
-		rule("R_REGIONAL_NODE_NAMING", "TLS_JA4", 90, detectRegionalNodeNamingRule),
-		rule("R_SINGLE_JA4_MULTI_SNI", "TLS_JA4", 95, detectSingleJA4MultiSNI),
-		rule("R_BLOCK_1300_SSR", "TCP_PAYLOAD", 100, block(1300, 0.30, "SSR")),
-		rule("R_BLOCK_1370_VLESS_VMESS", "TCP_PAYLOAD", 95, block(1370, 0.30, "VLess/VMess")),
-		rule("R_BLOCK_1400_JIGUANG", "TCP_PAYLOAD", 100, block(1400, 0.80, "Jiguang/Tianxing")),
-		rule("R_BLOCK_1448_SHANDIAN", "TCP_PAYLOAD", 100, block(1448, 0.90, "ShandianVPN")),
-		rule("R_BLOCK_1452_HOLA", "TCP_PAYLOAD", 100, block(1452, 0.77, "HolaVPN")),
-		rule("R_BLOCK_1378_CYBERGHOST", "TCP_PAYLOAD", 100, block(1378, 0.60, "CyberGhost/IPsec")),
-		rule("R_BLOCK_1344_NORDVPN", "TCP_PAYLOAD", 95, detectBlock1344NordVPN),
-		rule("R_WIZVPN_1452", "TCP_PAYLOAD", 100, detectWizVPN1452),
-		rule("R_MDNS_HOLA", "DNS", 100, detectMDNSHola),
-		rule("R_MDNS_RANDOM_LOCAL", "DNS", 90, detectRandomLocalDomainsRule),
-		rule("R_WPAD_STORM", "DNS", 60, detectWPADStorm),
-		rule("R_CHEAP_TLD_CONCENTRATION", "DNS", 90, detectCheapTLDConcentration),
-		rule("R_DNS_GAP_TCP_REACHABLE", "DNS", 90, detectDNSGapTCPReachable),
-		rule("R_UDP53_MASQUERADE", "DNS", 95, detectUDP53Masquerade),
-		rule("R_NORDVPN_DNS_TUNNEL", "DNS", 98, detectNordVPNDNSTunnel),
-		rule("R_DOH_PRESENT", "DNS", 70, detectDOHPresent),
-		rule("R_TWO_PHASE_CONNECTION", "TRAFFIC", 95, detectTwoPhaseConnection),
-		rule("R_QUIC_TLS_DUAL", "TRAFFIC", 60, detectQUICTLSDual),
-		rule("R_EXTREME_FLOW_DOMINANCE", "TRAFFIC", 90, detectExtremeFlowDominance),
+}
+
+func detectorRegistry() map[string]func(Feature) (bool, string) {
+	// 这张表是共享配置 detector 名称和 Go 检测函数之间的唯一映射。
+	return map[string]func(Feature) (bool, string){
+		"ipsec_esp":               detectIPSecESP,
+		"ipsec_ah":                detectIPSecAH,
+		"ipsec_esp_ah":            detectIPSecESPAH,
+		"ipsec_ike":               detectIPSecIKE,
+		"ipsec_natt":              detectIPSecNATT,
+		"wireguard_port":          detectWireGuardPort,
+		"wireguard_proto":         detectWireGuardProto,
+		"openvpn":                 detectOpenVPN,
+		"port_mismatch_3306":      detectPortMismatch3306,
+		"special_port_encrypted":  detectSpecialPortEncrypted,
+		"ssh_keepalive_probe":     detectSSHKeepalive,
+		"p2p_dual_channel":        detectP2PDualChannel,
+		"no_tls_encrypted_tcp":    detectNoTLSEncryptedTCP,
+		"vpn_domain_sni":          detectVPNDomainSNI,
+		"chrome_ja4_no_alpn":      detectChromeJA4NoALPN,
+		"ja4_non_browser":         detectJA4NonBrowser,
+		"ja4_golang":              detectJA4Go,
+		"single_cipher_suite":     detectSingleCipherSuite,
+		"tls_v1_0":                detectTLS10,
+		"sni_ip_mismatch":         detectSNIIPMismatch,
+		"single_sni_monopoly":     detectSingleSNIMonopoly,
+		"regional_node_naming":    detectRegionalNodeNamingRule,
+		"single_ja4_multi_sni":    detectSingleJA4MultiSNI,
+		"block_1344_nordvpn":      detectBlock1344NordVPN,
+		"wizvpn_1452":             detectWizVPN1452,
+		"mdns_hola":               detectMDNSHola,
+		"mdns_random_local":       detectRandomLocalDomainsRule,
+		"wpad_storm":              detectWPADStorm,
+		"cheap_tld_concentration": detectCheapTLDConcentration,
+		"dns_gap_tcp_reachable":   detectDNSGapTCPReachable,
+		"udp53_masquerade":        detectUDP53Masquerade,
+		"nordvpn_dns_tunnel":      detectNordVPNDNSTunnel,
+		"doh_present":             detectDOHPresent,
+		"two_phase_connection":    detectTwoPhaseConnection,
+		"quic_tls_dual":           detectQUICTLSDual,
+		"extreme_flow_dominance":  detectExtremeFlowDominance,
 	}
 }
 

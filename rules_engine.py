@@ -20,6 +20,7 @@ from .config import (
     FAMOUS_ENTERPRISE_SNI,
     JA4_GOLANG_PATTERN,
     RISK_TLDS,
+    RULE_DEFINITIONS,
     SPECIAL_PORTS,
 )
 from .utils import (
@@ -611,63 +612,83 @@ def _detect_single_ja4_multi_sni(f: Feature) -> Tuple[bool, str]:
 # 规则注册表（所有规则）
 # ═══════════════════════════════════════════
 
-ALL_RULES: List[RuleDef] = [
-    # L3 协议 (3)
-    RuleDef("R_IPSEC_ESP", "L3_PROTOCOL", "IP proto 50 (ESP) 检测", 100, _detect_ipsec_esp),
-    RuleDef("R_IPSEC_AH", "L3_PROTOCOL", "IP proto 51 (AH) 检测", 100, _detect_ipsec_ah),
-    RuleDef("R_IPSEC_ESP_AH", "L3_PROTOCOL", "IP proto 50/51 (ESP/AH) 任一", 100, _detect_ipsec_esp_ah),
+_DETECTOR_REGISTRY: Dict[str, DetectFunc] = {
+    # 这里把共享配置中的 detector 名称绑定到 Python 规则函数。
+    "ipsec_esp": _detect_ipsec_esp,
+    "ipsec_ah": _detect_ipsec_ah,
+    "ipsec_esp_ah": _detect_ipsec_esp_ah,
+    "ipsec_ike": _detect_ipsec_ike,
+    "ipsec_natt": _detect_ipsec_natt,
+    "wireguard_port": _detect_wireguard_port,
+    "wireguard_proto": _detect_wireguard_proto,
+    "openvpn": _detect_openvpn,
+    "port_mismatch_3306": _detect_port_mismatch_3306,
+    "special_port_encrypted": _detect_special_port_encrypted,
+    "ssh_keepalive_probe": _detect_ssh_keepalive,
+    "p2p_dual_channel": _detect_p2p_dual_channel,
+    "no_tls_encrypted_tcp": _detect_no_tls_encrypted_tcp,
+    "vpn_domain_sni": _detect_vpn_domain_sni,
+    "chrome_ja4_no_alpn": _detect_chrome_ja4_no_alpn,
+    "ja4_non_browser": _detect_ja4_non_browser,
+    "ja4_golang": _detect_ja4_golang,
+    "single_cipher_suite": _detect_single_cipher_suite,
+    "tls_v1_0": _detect_tls_v1_0,
+    "sni_ip_mismatch": _detect_sni_ip_mismatch,
+    "single_sni_monopoly": _detect_single_sni_monopoly,
+    "regional_node_naming": _detect_regional_node_naming,
+    "single_ja4_multi_sni": _detect_single_ja4_multi_sni,
+    "block_1344_nordvpn": _detect_block_1344_nordvpn,
+    "wizvpn_1452": _detect_wizvpn_1452,
+    "mdns_hola": _detect_mdns_hola,
+    "mdns_random_local": _detect_random_local_domains,
+    "wpad_storm": _detect_wpad_storm,
+    "cheap_tld_concentration": _detect_cheap_tld_concentration,
+    "dns_gap_tcp_reachable": _detect_dns_gap_tcp_reachable,
+    "udp53_masquerade": _detect_udp53_masquerade,
+    "nordvpn_dns_tunnel": _detect_nordvpn_dns_tunnel,
+    "doh_present": _detect_doh_present,
+    "two_phase_connection": _detect_two_phase_connection,
+    "quic_tls_dual": _detect_quic_tls_dual,
+    "extreme_flow_dominance": _detect_extreme_flow_dominance,
+}
 
-    # L4 UDP (5)
-    RuleDef("R_IPSEC_IKE", "L4_UDP", "ISAKMP/IKE 协议解析", 98, _detect_ipsec_ike),
-    RuleDef("R_IPSEC_NATT", "L4_UDP", "ESP-in-UDP NAT-T 检测", 98, _detect_ipsec_natt),
-    RuleDef("R_WIREGUARD_PORT", "L4_UDP", "WireGuard UDP 51820 端口", 98, _detect_wireguard_port),
-    RuleDef("R_WIREGUARD_PROTO", "L4_UDP", "WireGuard (wg) 协议识别", 98, _detect_wireguard_proto),
-    RuleDef("R_OPENVPN", "L4_UDP", "OpenVPN UDP 1194/1195 端口", 95, _detect_openvpn),
 
-    # L4 TCP (5)
-    RuleDef("R_PORT_MISMATCH_3306", "L4_TCP", "TCP 3306 非 MySQL + 1428 固定块", 98, _detect_port_mismatch_3306),
-    RuleDef("R_SPECIAL_PORT_ENCRYPTED", "L4_TCP", "专属端口 + 加密/固定块", 92, _detect_special_port_encrypted),
-    RuleDef("R_SSH_KEEPALIVE_PROBE", "L4_TCP", "SSH 端口周期性 SYN 保活探测 (SSR)", 95, _detect_ssh_keepalive),
-    RuleDef("R_P2P_DUAL_CHANNEL", "L4_TCP", "TLS控制 + 非TLS数据 双通道 (HolaVPN)", 95, _detect_p2p_dual_channel),
-    RuleDef("R_NO_TLS_ENCRYPTED_TCP", "L4_TCP", "无 TLS + 加密 TCP + 固定块 (SSR/VMess)", 95, _detect_no_tls_encrypted_tcp),
+def _build_rule_from_config(raw: Dict[str, Any]) -> RuleDef:
+    """把 JSON 中的一条规则配置转换成可执行 RuleDef。"""
 
-    # TLS / JA4 指纹 (10)
-    RuleDef("R_VPN_DOMAIN_SNI", "TLS_JA4", "DNS/SNI 命中 VPN 专属域名", 95, _detect_vpn_domain_sni),
-    RuleDef("R_CHROME_JA4_NO_ALPN", "TLS_JA4", "Chrome JA4 + 全部无 ALPN (TLS指纹伪造)", 95, _detect_chrome_ja4_no_alpn),
-    RuleDef("R_JA4_NON_BROWSER", "TLS_JA4", "JA4 非浏览器指纹 (密码套件数异常)", 85, _detect_ja4_non_browser),
-    RuleDef("R_JA4_GOLANG", "TLS_JA4", "Go TLS 客户端指纹 (Clash)", 92, _detect_ja4_golang),
-    RuleDef("R_SINGLE_CIPHER_SUITE", "TLS_JA4", "100% 单一密码套件 (硬编码VPN)", 95, _detect_single_cipher_suite),
-    RuleDef("R_TLS_V1_0", "TLS_JA4", "TLS 1.0 版本 (快帆)", 95, _detect_tls_v1_0),
-    RuleDef("R_SNI_IP_MISMATCH", "TLS_JA4", "SNI 知名企业域名 + IP 不匹配 (极光VPN)", 95, _detect_sni_ip_mismatch),
-    RuleDef("R_SINGLE_SNI_MONOPOLY", "TLS_JA4", "单一 SNI 垄断 >90% + 无 ALPN", 92, _detect_single_sni_monopoly),
-    RuleDef("R_REGIONAL_NODE_NAMING", "TLS_JA4", "SNI 区域化节点命名 (ISO国家码+编号)", 90, _detect_regional_node_naming),
-    RuleDef("R_SINGLE_JA4_MULTI_SNI", "TLS_JA4", "单一 JA4 服务 10+ 不同 SNI (极光VPN)", 95, _detect_single_ja4_multi_sni),
+    detector_name = str(raw.get("detector", ""))
+    if detector_name == "block_payload":
+        # 固定块规则使用统一模板，阈值和块大小来自共享配置。
+        params = raw.get("params") or {}
+        detect = _make_block_detector(
+            int(params["block_size"]),
+            float(params["threshold"]),
+            str(params.get("label", "")),
+        )
+    else:
+        # 普通规则只在配置里保存名称，真实检测逻辑仍由代码函数承载。
+        try:
+            detect = _DETECTOR_REGISTRY[detector_name]
+        except KeyError as exc:
+            raise ValueError(f"Unknown detector in rules_config.json: {detector_name}") from exc
 
-    # TCP 载荷 (8)
-    RuleDef("R_BLOCK_1300_SSR", "TCP_PAYLOAD", "1300 字节固定块 (SSR AEAD 密码)", 100, _make_block_detector(1300, 0.30, "SSR")),
-    RuleDef("R_BLOCK_1370_VLESS_VMESS", "TCP_PAYLOAD", "1370 字节固定块 (VLess/VMess)", 95, _make_block_detector(1370, 0.30, "VLess/VMess")),
-    RuleDef("R_BLOCK_1400_JIGUANG", "TCP_PAYLOAD", "1400 字节固定块 >80% (极光/天行VPN)", 100, _make_block_detector(1400, 0.80, "极光/天行VPN")),
-    RuleDef("R_BLOCK_1448_SHANDIAN", "TCP_PAYLOAD", "1448 字节固定块 >90% (闪电VPN)", 100, _make_block_detector(1448, 0.90, "闪电VPN TLS MTU满载")),
-    RuleDef("R_BLOCK_1452_HOLA", "TCP_PAYLOAD", "1452 字节固定块 >77% (HolaVPN P2P)", 100, _make_block_detector(1452, 0.77, "HolaVPN P2P")),
-    RuleDef("R_BLOCK_1378_CYBERGHOST", "TCP_PAYLOAD", "1378 字节固定块 >60% (CyberGhost)", 100, _make_block_detector(1378, 0.60, "CyberGhost IPsec NAT-T")),
-    RuleDef("R_BLOCK_1344_NORDVPN", "TCP_PAYLOAD", "1344 字节固定块 + malformed DNS (NordVPN)", 95, _detect_block_1344_nordvpn),
-    RuleDef("R_WIZVPN_1452", "TCP_PAYLOAD", "wizvpn.net 域名 + 1452 固定块 >50% (WizVPN)", 100, _detect_wizvpn_1452),
+    return RuleDef(
+        id=str(raw["id"]),
+        category=str(raw["category"]),
+        description=str(raw.get("description", raw["id"])),
+        confidence=int(raw["confidence"]),
+        detect=detect,
+        enabled=bool(raw.get("enabled", True)),
+    )
 
-    # DNS 行为 (8)
-    RuleDef("R_MDNS_HOLA", "DNS", "mDNS __hola__ 自识别 (HolaVPN)", 100, _detect_mdns_hola),
-    RuleDef("R_MDNS_RANDOM_LOCAL", "DNS", "随机 .local 域名 >5 (天行VPN)", 90, _detect_random_local_domains),
-    RuleDef("R_WPAD_STORM", "DNS", "WPAD 查询风暴 >500 次 (仅组合评分参考)", 60, _detect_wpad_storm),
-    RuleDef("R_CHEAP_TLD_CONCENTRATION", "DNS", "3+ 种廉价 TLD 集中", 90, _detect_cheap_tld_concentration),
-    RuleDef("R_DNS_GAP_TCP_REACHABLE", "DNS", "DNS 缺失但 TCP 可达 (IP硬编码)", 90, _detect_dns_gap_tcp_reachable),
-    RuleDef("R_UDP53_MASQUERADE", "DNS", "UDP 53 非 DNS 大载荷伪装 (NordVPN)", 95, _detect_udp53_masquerade),
-    RuleDef("R_NORDVPN_DNS_TUNNEL", "DNS", "NordVPN DNS 混淆隧道 (UDP53独占+100%malformed+固定载荷)", 98, _detect_nordvpn_dns_tunnel),
-    RuleDef("R_DOH_PRESENT", "DNS", "DoH 存在 (隐私增强)", 70, _detect_doh_present),
 
-    # 流量行为 (3)
-    RuleDef("R_TWO_PHASE_CONNECTION", "TRAFFIC", "两阶段连接：注册+数据端口 (闪电VPN)", 95, _detect_two_phase_connection),
-    RuleDef("R_QUIC_TLS_DUAL", "TRAFFIC", "QUIC + TLS 双协议隧道 (仅组合评分)", 60, _detect_quic_tls_dual),
-    RuleDef("R_EXTREME_FLOW_DOMINANCE", "TRAFFIC", "极端单流垄断 >98% + 长连接", 90, _detect_extreme_flow_dominance),
-]
+def _build_rules_from_config(raw_rules: List[Dict[str, Any]]) -> List[RuleDef]:
+    """集中构建规则列表，保证规则顺序完全由共享配置决定。"""
+
+    return [_build_rule_from_config(raw) for raw in raw_rules]
+
+
+ALL_RULES: List[RuleDef] = _build_rules_from_config(RULE_DEFINITIONS)
 
 
 class RuleEngine:

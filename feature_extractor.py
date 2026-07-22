@@ -33,14 +33,12 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
+from .config import BLOCK_SIZES, RISK_TLDS, STANDARD_TLS_PORTS
 from .identity import make_capture_id, make_sample_id, make_split_group
 
 logger = logging.getLogger(__name__)
 
 PCAP_EXTS = {".pcap", ".pcapng", ".cap"}
-BLOCK_SIZES = [1300, 1370, 1400, 1448, 1452, 1310, 1344, 1428, 1378]
-SPECIAL_PORTS = {5608, 65311, 22225, 22226, 11581, 11582, 11681, 11000, 3128, 8388, 22231, 51820, 1194, 1195}
-STANDARD_TLS_PORTS = {443, 8443, 9443}
 
 
 def run_cmd(cmd: List[str], timeout: int = 120) -> str:
@@ -822,7 +820,8 @@ def extract_features_for_pcap(
         "max_flow_duration": max((f["duration"] for f in finalized), default=0.0),
         "risk_tld_count": sum(
             1 for d, _ in list(summary["dns_counter"].items()) + list(summary["sni_counter"].items())
-            if any(str(d).lower().endswith(tld) for tld in [".icu", ".fun", ".xyz", ".club", ".site", ".top", ".cfd", ".date", ".one", ".pro"])
+            # 风险 TLD 统一从共享配置读取，避免提取阶段和检测阶段定义不一致。
+            if any(str(d).lower().endswith(tld) for tld in RISK_TLDS)
         ),
         "max_domain_entropy": max(
             [domain_entropy(str(d)) for d in list(summary["dns_counter"].keys()) + list(summary["sni_counter"].keys())] or [0.0]

@@ -8,11 +8,12 @@ type Pair struct {
 }
 
 type RuleDef struct {
-	ID         string
-	Category   string
-	Confidence int
-	Detect     func(Feature) (bool, string)
-	Enabled    bool
+	ID          string
+	Category    string
+	Description string
+	Confidence  int
+	Detect      func(Feature) (bool, string)
+	Enabled     bool
 }
 
 type RuleMatch struct {
